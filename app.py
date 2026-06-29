@@ -23,11 +23,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== Enterprise RAG app starting ===")
 
-# ── Streamlit Config ───────────────────────────────────────────────────
-st.set_page_config(page_title="Enterprise RAG - Knowledge Base", layout="wide")
+# ── Streamlit Page Config ──────────────────────────────────────────────
+st.set_page_config(
+    page_title="Enterprise RAG - Knowledge Base",
+    page_icon="🧠",
+    layout="wide",
+)
 
-st.title("Enterprise RAG - Knowledge Base")
-
+# ── Session State Initialization ───────────────────────────────────────
 if "index" not in st.session_state:
     st.session_state.index = load_vector_index()
 
@@ -37,70 +40,162 @@ if "query_engine" not in st.session_state:
 if "indexed_files" not in st.session_state:
     st.session_state.indexed_files = set()
 
+if "total_chunks" not in st.session_state:
+    st.session_state.total_chunks = 0
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "llm_provider" not in st.session_state:
+    st.session_state.llm_provider = "ollama"
+
+# ── Sidebar ────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("Upload Documents")
+    # -- App branding --
+    st.markdown("# 🧠 Enterprise RAG")
+    st.markdown("**Multi-Source Knowledge Base**")
+    st.divider()
+
+    # -- Upload section --
+    st.markdown("### 📁 Upload Documents")
     uploaded_files = st.file_uploader(
-        "Upload PDF and CSV files", 
-        type=["pdf", "csv"], 
-        accept_multiple_files=True
+        "Upload PDF and CSV files",
+        type=["pdf", "csv"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
     )
-    
+
     if uploaded_files:
-        # Only re-index if new files are uploaded (avoid re-processing on every rerun)
+        # Only re-index when the set of uploaded file names changes
         new_file_names = {f.name for f in uploaded_files}
         if new_file_names != st.session_state.indexed_files:
-            with st.spinner("Processing files..."):
+            with st.spinner("Processing files…"):
                 file_paths = []
                 for file in uploaded_files:
                     file_path = save_uploaded_file(file)
                     file_paths.append(file_path)
-                
+
                 documents = load_documents(file_paths)
                 nodes = chunk_documents(documents)
                 index = build_vector_index(nodes)
-                
+
                 st.session_state.index = index
-                st.session_state.query_engine = None  # Reset so it rebuilds with new index
+                st.session_state.query_engine = None  # force rebuild
                 st.session_state.indexed_files = new_file_names
-                logger.info(f"Indexed {len(nodes)} chunks from {len(uploaded_files)} files")
-                st.success(f"✅ Indexed {len(nodes)} chunks from {len(uploaded_files)} files")
+                st.session_state.total_chunks = len(nodes)
+                logger.info(
+                    f"Indexed {len(nodes)} chunks from {len(uploaded_files)} files"
+                )
+
+            # Show indexing results
+            st.success(f"✅ {len(uploaded_files)} files indexed")
+            st.caption(f"📦 {len(nodes)} total chunks")
         else:
-            st.info("📄 Files already indexed")
+            st.success(f"✅ {len(st.session_state.indexed_files)} files indexed")
+            st.caption(f"📦 {st.session_state.total_chunks} total chunks")
 
-if st.session_state.index is not None:
-    st.sidebar.success("📚 Knowledge base ready")
+    st.divider()
 
-query = st.text_input("Ask a question based on your documents:")
+    # -- Settings section --
+    st.markdown("### ⚙️ Settings")
 
-if query:
-    if st.session_state.index is None:
-        st.warning("⚠️ Please upload files first")
+    provider_options = ["Ollama (Local)", "Gemini (API)"]
+    # Map session_state value to selectbox index
+    current_idx = 0 if st.session_state.llm_provider == "ollama" else 1
+
+    selected_provider = st.selectbox(
+        "LLM Provider",
+        options=provider_options,
+        index=current_idx,
+        label_visibility="collapsed",
+    )
+
+    # Derive canonical provider key from selectbox label
+    new_provider = "ollama" if selected_provider == "Ollama (Local)" else "gemini"
+
+    if new_provider != st.session_state.llm_provider:
+        st.session_state.llm_provider = new_provider
+        st.session_state.query_engine = None  # force rebuild with new LLM
+        logger.info(f"LLM provider switched to '{new_provider}'")
+
+    # LLM status indicator
+    if st.session_state.llm_provider == "ollama":
+        st.markdown("🟢 Ollama running locally")
     else:
-        # Build query engine once and cache in session state
-        if st.session_state.query_engine is None:
-            try:
-                st.session_state.query_engine = get_query_engine(st.session_state.index)
-            except ValueError as e:
-                st.error(f"⚠️ {str(e)}")
-                logger.error(f"Query engine creation failed: {e}")
-                st.stop()
+        st.markdown("🔵 Gemini API")
 
-        with st.spinner("🔍 Searching knowledge base..."):
-            result = query_knowledge_base(st.session_state.query_engine, query)
+# ── Main Area ──────────────────────────────────────────────────────────
+# Header row with title + clear history button
+header_left, header_right = st.columns([6, 1])
+with header_left:
+    st.markdown("## Ask Your Knowledge Base")
+    st.caption("Upload documents in the sidebar, then ask anything.")
+with header_right:
+    if st.session_state.chat_history:
+        if st.button("🗑️ Clear History"):
+            st.session_state.chat_history = []
+            st.rerun()
 
-        # Display the answer
-        st.markdown(result["answer"])
+# ── No index loaded → prompt user ──────────────────────────────────────
+if st.session_state.index is None:
+    st.info("👈 Upload PDF or CSV files from the sidebar to get started")
+    st.stop()
 
-        # Show which LLM was used
-        st.caption(f"🤖 Answered by: {result['llm_used']}")
+# ── Query interface ────────────────────────────────────────────────────
+input_col, btn_col = st.columns([5, 1])
+with input_col:
+    query = st.text_input(
+        "Ask a question about your documents…",
+        label_visibility="collapsed",
+        placeholder="Ask a question about your documents…",
+    )
+with btn_col:
+    ask_clicked = st.button("Ask", type="primary", use_container_width=True)
 
-        # Display sources in an expander
-        if result["sources"]:
-            with st.expander("📄 View Sources"):
-                for i, source in enumerate(result["sources"]):
+# Process query
+if ask_clicked and query:
+    # Build query engine if needed
+    if st.session_state.query_engine is None:
+        try:
+            st.session_state.query_engine = get_query_engine(
+                st.session_state.index,
+                provider=st.session_state.llm_provider,
+            )
+        except ValueError as e:
+            st.error(f"⚠️ {str(e)}")
+            logger.error(f"Query engine creation failed: {e}")
+            st.stop()
+
+    with st.spinner("🔍 Searching knowledge base…"):
+        result = query_knowledge_base(st.session_state.query_engine, query)
+
+    # Append to chat history
+    st.session_state.chat_history.append({
+        "question": query,
+        "answer": result["answer"],
+        "sources": result["sources"],
+        "llm_used": result["llm_used"],
+    })
+    st.rerun()  # rerun so the new entry renders immediately in history
+
+# ── Chat History ───────────────────────────────────────────────────────
+if st.session_state.chat_history:
+    st.divider()
+    st.markdown("### 💬 Query History")
+
+    # Display newest first
+    for entry in reversed(st.session_state.chat_history):
+        st.info(f"🙋 **You:** {entry['question']}")
+        st.success(f"🤖 **Answer:** {entry['answer']}")
+        st.caption(f"Answered by: {entry['llm_used']}")
+
+        if entry["sources"]:
+            with st.expander(f"📄 Sources ({len(entry['sources'])})"):
+                for i, source in enumerate(entry["sources"]):
                     st.markdown(f"**{source['filename']}**")
                     st.caption(source["text"])
-                    if source["score"]:
-                        st.caption(f"Relevance score: {source['score']:.4f}")
-                    if i < len(result["sources"]) - 1:
+                    if source.get("score"):
+                        st.caption(f"Relevance: {source['score']:.4f}")
+                    if i < len(entry["sources"]) - 1:
                         st.divider()
+        st.markdown("---")

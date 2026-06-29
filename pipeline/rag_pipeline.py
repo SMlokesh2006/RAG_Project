@@ -19,9 +19,13 @@ logger = logging.getLogger(__name__)
 _active_llm_name: str = "none"
 
 
-def get_llm():
+def get_llm(provider: str | None = None):
     """
-    Return a LlamaIndex-compatible LLM based on LLM_PROVIDER in config.
+    Return a LlamaIndex-compatible LLM based on the given provider.
+
+    Args:
+        provider: "ollama" or "gemini". When None, falls back to
+                  LLM_PROVIDER from config.py.
 
     - If "ollama": tries to connect to a local Ollama instance.
       On connection failure, automatically falls back to Gemini.
@@ -33,7 +37,9 @@ def get_llm():
     global _active_llm_name
     load_dotenv()
 
-    if LLM_PROVIDER == "ollama":
+    effective_provider = provider if provider else LLM_PROVIDER
+
+    if effective_provider == "ollama":
         try:
             from llama_index.llms.ollama import Ollama
 
@@ -71,7 +77,7 @@ def get_llm():
     return llm
 
 
-def get_query_engine(index):
+def get_query_engine(index, provider: str | None = None):
     """
     Create a query engine from a LlamaIndex VectorStoreIndex.
 
@@ -80,11 +86,13 @@ def get_query_engine(index):
 
     Args:
         index: A LlamaIndex VectorStoreIndex object.
+        provider: Optional LLM provider override ("ollama" or "gemini").
+                  When None, uses the default from config.py.
 
     Returns:
         A configured query engine ready to answer questions.
     """
-    llm = get_llm()
+    llm = get_llm(provider=provider)
     Settings.llm = llm
     Settings.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL)
     logger.info(f"Embedding model set to '{EMBED_MODEL}'")
