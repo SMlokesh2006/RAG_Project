@@ -91,6 +91,9 @@ if query:
         # Display the answer
         st.markdown(result["answer"])
 
+        # Show which LLM was used
+        st.caption(f"🤖 Answered by: {result['llm_used']}")
+
         # Display sources in an expander
         if result["sources"]:
             with st.expander("📄 View Sources"):
