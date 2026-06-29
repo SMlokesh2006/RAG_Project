@@ -1,0 +1,10 @@
+streamlit
+llama-index
+llama-index-vector-stores-faiss
+faiss-cpu
+python-dotenv
+pandas
+pypdf
+sentence-transformers
+openai
+llama-index-llms-openai
